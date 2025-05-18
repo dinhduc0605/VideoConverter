@@ -4,7 +4,6 @@ import sys
 import subprocess
 import threading
 import time
-import cv2  # Import OpenCV for video property detection
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                             QLabel, QPushButton, QListWidget, QFileDialog, QProgressBar, 
                             QFrame, QSplitter, QGroupBox, QGridLayout, QLineEdit, QCheckBox)
@@ -260,39 +259,8 @@ class VideoConverter(QMainWindow):
             except:
                 self.duration_label.setText("Unknown")
             
-            # Get resolution and FPS using OpenCV (which worked well in the Tkinter version)
-            try:
-                # Open the video file with OpenCV
-                cap = cv2.VideoCapture(video_path)
-                if cap.isOpened():
-                    # Get resolution
-                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    if width > 0 and height > 0:
-                        self.resolution_label.setText(f"{width}x{height}")
-                    else:
-                        self.resolution_label.setText("Unknown")
-                    
-                    # Get FPS
-                    fps = cap.get(cv2.CAP_PROP_FPS)
-                    if fps > 0:
-                        self.fps_label.setText(f"{fps:.2f}")
-                        # Store FPS in video properties dictionary
-                        if video_path not in self.video_properties:
-                            self.video_properties[video_path] = {}
-                        self.video_properties[video_path]['fps'] = fps
-                    else:
-                        self.fps_label.setText("Unknown")
-                    
-                    # Release the video capture
-                    cap.release()
-                else:
-                    # If OpenCV can't open the file, fall back to ffprobe
-                    self._get_video_properties_with_ffprobe(video_path)
-            except Exception as e:
-                print(f"Error getting video properties with OpenCV: {str(e)}")
-                # Fall back to ffprobe if OpenCV fails
-                self._get_video_properties_with_ffprobe(video_path)
+            # Get all video properties using ffprobe
+            self._get_video_properties(video_path)
                 
         except Exception as e:
             # Reset properties on error
@@ -301,8 +269,8 @@ class VideoConverter(QMainWindow):
             self.fps_label.setText("Error")
             self.duration_label.setText("Error")
     
-    def _get_video_properties_with_ffprobe(self, video_path):
-        """Fallback method to get video properties using ffprobe"""
+    def _get_video_properties(self, video_path):
+        """Get video properties using ffprobe"""
         # Get resolution
         try:
             resolution_cmd = [
@@ -330,23 +298,36 @@ class VideoConverter(QMainWindow):
                 "-of", "default=noprint_wrappers=1:nokey=1", video_path
             ]
             fps_output = subprocess.check_output(fps_cmd, universal_newlines=True).strip()
+            print(f"Raw FPS output: {fps_output}")
             
-            # Parse frame rate (which may be a fraction like "30000/1001")
-            if '/' in fps_output:
-                num, den = fps_output.split('/')
-                fps = float(num) / float(den)
-                self.fps_label.setText(f"{fps:.2f}")
-                # Store FPS in video properties dictionary
-                if video_path not in self.video_properties:
-                    self.video_properties[video_path] = {}
-                self.video_properties[video_path]['fps'] = fps
-            elif fps_output.replace('.', '', 1).isdigit():  # Check if it's a valid number
-                fps = float(fps_output)
-                self.fps_label.setText(f"{fps:.2f}")
-                # Store FPS in video properties dictionary
-                if video_path not in self.video_properties:
-                    self.video_properties[video_path] = {}
-                self.video_properties[video_path]['fps'] = fps
+            # Handle multiple lines in output (some videos have multiple frame rates)
+            fps_lines = fps_output.strip().split('\n')
+            if fps_lines:
+                # Use the first frame rate if multiple are returned
+                fps_value = fps_lines[0]
+                
+                # Parse frame rate (which may be a fraction like "30000/1001")
+                if '/' in fps_value:
+                    try:
+                        num, den = fps_value.split('/')
+                        fps = float(num) / float(den)
+                        self.fps_label.setText(f"{fps:.2f}")
+                        # Store FPS in video properties dictionary
+                        if video_path not in self.video_properties:
+                            self.video_properties[video_path] = {}
+                        self.video_properties[video_path]['fps'] = fps
+                    except ValueError as e:
+                        print(f"Error parsing fraction: {e}")
+                        self.fps_label.setText("Unknown")
+                elif fps_value.replace('.', '', 1).isdigit():  # Check if it's a valid number
+                    fps = float(fps_value)
+                    self.fps_label.setText(f"{fps:.2f}")
+                    # Store FPS in video properties dictionary
+                    if video_path not in self.video_properties:
+                        self.video_properties[video_path] = {}
+                    self.video_properties[video_path]['fps'] = fps
+                else:
+                    self.fps_label.setText("Unknown")
             else:
                 self.fps_label.setText("Unknown")
         except Exception as e:
