@@ -7,7 +7,7 @@ import time
 import cv2  # Import OpenCV for video property detection
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                             QLabel, QPushButton, QListWidget, QFileDialog, QProgressBar, 
-                            QFrame, QSplitter, QGroupBox, QGridLayout, QLineEdit)
+                            QFrame, QSplitter, QGroupBox, QGridLayout, QLineEdit, QCheckBox)
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal, pyqtSlot, QSize, QThread
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
@@ -133,6 +133,16 @@ class VideoConverter(QMainWindow):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         convert_layout.addWidget(self.progress_bar)
+        
+        # Conversion options
+        options_layout = QVBoxLayout()
+        
+        # Rotation checkbox
+        self.rotate_checkbox = QCheckBox("Rotate video 90° counterclockwise")
+        self.rotate_checkbox.setChecked(False)  # Default to checked
+        options_layout.addWidget(self.rotate_checkbox)
+        
+        convert_layout.addLayout(options_layout)
         
         # Status label
         self.status_label = QLabel("Ready")
@@ -437,6 +447,9 @@ class VideoConverter(QMainWindow):
             self.statusBar().showMessage("Please select at least one video to convert.")
             return
         
+        # Get rotation setting
+        rotate_video = self.rotate_checkbox.isChecked()
+        
         output_dir = self.output_dir_input.text()
         if not os.path.exists(output_dir):
             try:
@@ -454,7 +467,7 @@ class VideoConverter(QMainWindow):
         self.status_label.setText("Converting...")
         
         # Create and start the conversion thread
-        self.conversion_thread = ConversionThread(self.video_files, output_dir, self.video_properties)
+        self.conversion_thread = ConversionThread(self.video_files, output_dir, self.video_properties, rotate_video)
         self.conversion_thread.progress_update.connect(self.update_progress)
         self.conversion_thread.status_update.connect(self.update_status)
         self.conversion_thread.conversion_complete.connect(self.conversion_completed)
@@ -491,11 +504,12 @@ class ConversionThread(QThread):
     conversion_complete = pyqtSignal()
     conversion_error = pyqtSignal(str, str)
     
-    def __init__(self, video_files, output_dir, video_properties=None):
+    def __init__(self, video_files, output_dir, video_properties=None, rotate_video=True):
         super().__init__()
         self.video_files = video_files
         self.output_dir = output_dir
         self.video_properties = video_properties or {}
+        self.rotate_video = rotate_video
     
     def run(self):
         """Run the conversion process"""
@@ -552,13 +566,27 @@ class ConversionThread(QThread):
                 
                 # Run ffmpeg conversion with progress monitoring
                 cmd = [
-                    "ffmpeg", "-i", input_file,
-                    "-c:v", "libx264", "-preset", "medium", "-crf", "23",
-                    "-c:a", "aac", "-b:a", "128k",
-                    # Rotate 90 degrees counterclockwise and change aspect ratio from 16:9 to 9:16
-                    "-vf", "transpose=2",
-                    "-aspect", "9:16"
+                    "ffmpeg", "-i", input_file
                 ]
+                
+                # If rotation is enabled, we need to re-encode the video
+                if self.rotate_video:
+                    # Use high-quality encoding settings with rotation
+                    cmd.extend([
+                        "-c:v", "libx264", "-preset", "slow", "-crf", "18",  # Higher quality encoding
+                        "-c:a", "aac", "-b:a", "192k",  # Better audio quality
+                        # Rotate 90 degrees counterclockwise and change aspect ratio from 16:9 to 9:16
+                        "-vf", "transpose=2",
+                        "-aspect", "9:16"
+                    ])
+                else:
+                    # If no rotation, use -vcodec copy to preserve original quality
+                    # Use -ss 0.04 to skip the first frame (approximately)
+                    cmd.extend([
+                        "-vcodec", "copy",  # Copy video stream without re-encoding
+                        "-c:a", "aac", "-b:a", "192k"  # Convert audio to AAC for compatibility
+                    ])
+                
                 
                 # Add FPS parameter if we successfully retrieved it
                 if fps > 0:
