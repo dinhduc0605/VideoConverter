@@ -18,11 +18,12 @@ class VideoConverter(QMainWindow):
         super().__init__()
         
         # Set window properties
-        self.setWindowTitle("MTS to MP4 Video Converter")
+        self.setWindowTitle("MTS to MP4 Video Converter - Portrait Mode")
         self.setMinimumSize(900, 600)
         
         # Initialize variables
         self.video_files = []
+        self.video_properties = {}  # Dictionary to store properties for each video file
         self.current_preview_file = None
         self.preview_running = False
         self.output_directory = os.path.expanduser("~/Desktop/VideoConverter")
@@ -266,6 +267,10 @@ class VideoConverter(QMainWindow):
                     fps = cap.get(cv2.CAP_PROP_FPS)
                     if fps > 0:
                         self.fps_label.setText(f"{fps:.2f}")
+                        # Store FPS in video properties dictionary
+                        if video_path not in self.video_properties:
+                            self.video_properties[video_path] = {}
+                        self.video_properties[video_path]['fps'] = fps
                     else:
                         self.fps_label.setText("Unknown")
                     
@@ -321,9 +326,17 @@ class VideoConverter(QMainWindow):
                 num, den = fps_output.split('/')
                 fps = float(num) / float(den)
                 self.fps_label.setText(f"{fps:.2f}")
+                # Store FPS in video properties dictionary
+                if video_path not in self.video_properties:
+                    self.video_properties[video_path] = {}
+                self.video_properties[video_path]['fps'] = fps
             elif fps_output.replace('.', '', 1).isdigit():  # Check if it's a valid number
                 fps = float(fps_output)
                 self.fps_label.setText(f"{fps:.2f}")
+                # Store FPS in video properties dictionary
+                if video_path not in self.video_properties:
+                    self.video_properties[video_path] = {}
+                self.video_properties[video_path]['fps'] = fps
             else:
                 self.fps_label.setText("Unknown")
         except Exception as e:
@@ -372,7 +385,7 @@ class VideoConverter(QMainWindow):
                         "-ar", "48000",  # Standard audio sample rate
                         "-y", temp_preview_file
                     ]
-                    
+                
                     # Run the conversion process
                     process = subprocess.Popen(
                         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -389,7 +402,6 @@ class VideoConverter(QMainWindow):
                         # If conversion fails, use the original file
                         self.temp_preview_file = None
                         preview_file = self.current_preview_file
-                        
                 except Exception as e:
                     # If there's an error, fall back to the original file
                     self.temp_preview_file = None
@@ -399,7 +411,7 @@ class VideoConverter(QMainWindow):
                 # For non-MTS files, use the original file
                 self.temp_preview_file = None
                 preview_file = self.current_preview_file
-            
+                
             # Start playing the video
             self.media_player.setSource(QUrl.fromLocalFile(preview_file))
             self.status_label.setText("Ready")
@@ -442,7 +454,7 @@ class VideoConverter(QMainWindow):
         self.status_label.setText("Converting...")
         
         # Create and start the conversion thread
-        self.conversion_thread = ConversionThread(self.video_files, output_dir)
+        self.conversion_thread = ConversionThread(self.video_files, output_dir, self.video_properties)
         self.conversion_thread.progress_update.connect(self.update_progress)
         self.conversion_thread.status_update.connect(self.update_status)
         self.conversion_thread.conversion_complete.connect(self.conversion_completed)
@@ -479,10 +491,11 @@ class ConversionThread(QThread):
     conversion_complete = pyqtSignal()
     conversion_error = pyqtSignal(str, str)
     
-    def __init__(self, video_files, output_dir):
+    def __init__(self, video_files, output_dir, video_properties=None):
         super().__init__()
         self.video_files = video_files
         self.output_dir = output_dir
+        self.video_properties = video_properties or {}
     
     def run(self):
         """Run the conversion process"""
@@ -511,13 +524,51 @@ class ConversionThread(QThread):
                     duration = 0  # If we can't get duration, we'll use file-based progress
                 
                 # Run ffmpeg conversion with progress monitoring
+                # Check if we have stored FPS for this file
+                fps = 0
+                if input_file in self.video_properties and 'fps' in self.video_properties[input_file]:
+                    fps = self.video_properties[input_file]['fps']
+                    self.status_update.emit(f"Using stored FPS: {fps:.2f} for {filename}")
+                
+                # If no stored FPS, get it using ffprobe
+                if fps <= 0:
+                    fps_cmd = [
+                        "ffprobe", "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=r_frame_rate", "-of", "default=noprint_wrappers=1:nokey=1",
+                        input_file
+                    ]
+                    
+                    try:
+                        fps_output = subprocess.check_output(fps_cmd, universal_newlines=True).strip()
+                        # r_frame_rate is returned as a fraction (e.g., "30000/1001")
+                        fps_parts = fps_output.split('/')
+                        if len(fps_parts) == 2:
+                            fps = float(fps_parts[0]) / float(fps_parts[1])
+                        else:
+                            fps = float(fps_output)
+                        self.status_update.emit(f"Detected FPS: {fps:.2f} for {filename}")
+                    except:
+                        fps = 0  # If we can't get FPS, ffmpeg will use the source FPS by default
+                
+                # Run ffmpeg conversion with progress monitoring
                 cmd = [
                     "ffmpeg", "-i", input_file,
                     "-c:v", "libx264", "-preset", "medium", "-crf", "23",
                     "-c:a", "aac", "-b:a", "128k",
+                    # Rotate 90 degrees counterclockwise and change aspect ratio from 16:9 to 9:16
+                    "-vf", "transpose=2",
+                    "-aspect", "9:16"
+                ]
+                
+                # Add FPS parameter if we successfully retrieved it
+                if fps > 0:
+                    cmd.extend(["-r", str(fps)])
+                
+                # Add progress and output parameters
+                cmd.extend([
                     "-progress", "pipe:1",  # Output progress to stdout
                     "-y", output_path
-                ]
+                ])
                 
                 process = subprocess.Popen(
                     cmd, 
@@ -577,7 +628,7 @@ if __name__ == "__main__":
     
     # Set application font
     font = QFont()
-    font.setPointSize(10)
+    font.setPointSize(12)
     app.setFont(font)
     
     window = VideoConverter()
